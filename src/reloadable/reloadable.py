@@ -7,6 +7,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Timer, Lock
+import types
 from typing import Any
 
 from rich.console import Console
@@ -61,6 +62,42 @@ class BatchDebounceTimer:
             self.batch.clear()
 
 
+class ImportTracker:
+    def __init__(self):
+        self.original_import_order = []
+        self.original_import_map = {}
+        self.original_import_hook = __import__
+
+    @contextmanager
+    def track_imports(self):
+        def import_tracker(name, *args, **kwargs):
+            module = self.original_import_hook(name, *args, **kwargs)
+            if isinstance(module, types.ModuleType) and not name.startswith("_"):
+                if module.__name__ not in self.original_import_map:
+                    self.original_import_map[module.__name__] = len(
+                        self.original_import_order
+                    )
+                    self.original_import_order.append(module.__name__)
+            return module
+
+        sys.modules["builtins"].__import__ = import_tracker
+        try:
+            yield
+        finally:
+            sys.modules["builtins"].__import__ = self.original_import_hook
+
+    def get_position(self, module_name):
+        # Unknown modules go last
+        return self.original_import_map.get(module_name, float("inf"))
+
+
+def filepath_to_module_name(filepath: Path) -> str:
+    # Takes a relpath and returns the module name
+    return (
+        filepath.with_suffix("").as_posix().replace("/", ".").removesuffix("__init__")
+    )
+
+
 class PyModuleReloader(FileSystemEventHandler):
     def __init__(
         self,
@@ -81,6 +118,11 @@ class PyModuleReloader(FileSystemEventHandler):
                 project_config=project_config,
                 direction=Direction.Dependents,
             )
+
+        with timer("Initial import order tracking"):
+            self.tracker = ImportTracker()
+            with self.tracker.track_imports():
+                importlib.import_module(self.root_module_path)
 
         self.batch_handler = BatchDebounceTimer(debounce_seconds, self.handle_batch)
 
@@ -105,25 +147,26 @@ class PyModuleReloader(FileSystemEventHandler):
                 )
                 self.dep_map.update_files(relpaths)
 
-            affected_modules = None
-            try:
-                with timer("Calculating affected modules", indent=1):
-                    affected_modules = self.dep_map.get_closure(relpaths)
-            except ValueError:
-                console.print("  [green]No affected modules.[/green]")
+            with timer("Calculating affected modules", indent=1):
+                try:
+                    affected_files = set(map(Path, self.dep_map.get_closure(relpaths)))
+                except ValueError:
+                    affected_files = set(relpaths)
 
-            if affected_modules:
-                preview = list(affected_modules)[:5]
+            if affected_files:
+                preview = list(map(str, affected_files))[:5]
                 console.print(
-                    f"  [yellow]Will reload {len(affected_modules)} "
-                    f"file{'s' if len(affected_modules) != 1 else ''}: "
+                    f"  [yellow]Will reload {len(affected_files)} "
+                    f"file{'s' if len(affected_files) != 1 else ''}: "
                     f"{', '.join(preview)}"
-                    f"{'[dim] [more...][/dim]' if len(affected_modules) > 5 else ''}[/yellow]"
+                    f"{'[dim] [more...][/dim]' if len(affected_files) > 5 else ''}[/yellow]"
                 )
-                # TODO: reload modules
-
-            console.print(f"[blue]Reloading '{self.root_module_path}'...[/blue]")
-            importlib.reload(sys.modules[self.root_module_path])
+                for file_path in affected_files:
+                    del sys.modules[filepath_to_module_name(file_path)]
+                with timer("Reloading modules", indent=1):
+                    reload_order = sorted(affected_files, key=self.tracker.get_position)
+                    for file_path in reload_order:
+                        importlib.import_module(filepath_to_module_name(file_path))
 
 
 class ReloadableWSGI:
