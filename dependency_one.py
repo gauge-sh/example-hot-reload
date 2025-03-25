@@ -1,1 +1,0 @@
-CONSTANT = "Hello, Presidio!"

@@ -94,7 +94,7 @@ class ImportTracker:
 def filepath_to_module_name(filepath: Path) -> str:
     # Takes a relpath and returns the module name
     return (
-        filepath.with_suffix("").as_posix().replace("/", ".").removesuffix("__init__")
+        filepath.with_suffix("").as_posix().replace("/", ".").removesuffix(".__init__")
     )
 
 
@@ -121,8 +121,11 @@ class PyModuleReloader(FileSystemEventHandler):
 
         with timer("Initial import order tracking"):
             self.tracker = ImportTracker()
+            self.tracker.original_import_order = [self.root_module_path]
             with self.tracker.track_imports():
                 importlib.import_module(self.root_module_path)
+            console.print("[blue]Initial import order:[/blue]")
+            console.print(self.tracker.original_import_order)
 
         self.batch_handler = BatchDebounceTimer(debounce_seconds, self.handle_batch)
 
@@ -162,9 +165,17 @@ class PyModuleReloader(FileSystemEventHandler):
                     f"{'[dim] [more...][/dim]' if len(affected_files) > 5 else ''}[/yellow]"
                 )
                 for file_path in affected_files:
-                    del sys.modules[filepath_to_module_name(file_path)]
+                    try:
+                        del sys.modules[filepath_to_module_name(file_path)]
+                    except KeyError:
+                        pass
                 with timer("Reloading modules", indent=1):
-                    reload_order = sorted(affected_files, key=self.tracker.get_position)
+                    reload_order = sorted(
+                        affected_files,
+                        key=lambda filepath: self.tracker.get_position(
+                            filepath_to_module_name(filepath)
+                        ),
+                    )
                     for file_path in reload_order:
                         importlib.import_module(filepath_to_module_name(file_path))
 
