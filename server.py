@@ -1,3 +1,8 @@
+import time
+
+start_time = time.perf_counter()
+
+print("Starting server.py execution...")
 import json
 import sys
 from example.module_0.file_0 import example_function_0 as startup_function
@@ -91,3 +96,6 @@ class WSGIApp:
 
 
 application = WSGIApp()
+
+end_time = time.perf_counter()
+print(f"Server.py initialization completed in {end_time - start_time:.3f} seconds")

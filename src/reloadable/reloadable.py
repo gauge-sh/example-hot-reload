@@ -122,6 +122,7 @@ class PyModuleReloader(FileSystemEventHandler):
         with timer("Initial import order tracking"):
             self.tracker = ImportTracker()
             self.tracker.original_import_order = [self.root_module_path]
+            self.tracker.original_import_map = {self.root_module_path: 0}
             with self.tracker.track_imports():
                 importlib.import_module(self.root_module_path)
             console.print("[blue]Initial import order:[/blue]")
